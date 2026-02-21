@@ -3,7 +3,7 @@
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
-define('DB_HOST', 'lindlar.anno-dazumal.de');
+define('DB_HOST', 'lindlar-anno-dazumal.de');
 define('DB_NAME', 'd0464739');
 define('DB_USER', 'd0464739');
 define('DB_PASS', 'qp#APCJdKBTWjoV2)!U4');
