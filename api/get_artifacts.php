@@ -2,21 +2,97 @@
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/helpers.php';
 
-// Nur GET erlauben
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     abort('Method Not Allowed', 405);
 }
 
-// --- Parameter validieren ---
-$id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
-if (!$id || $id < 1) {
-    abort('Ungültige oder fehlende ID.', 400);
-}
-
 $db = get_db();
 
-// --- 1. Artefakt laden (inkl. primärem Ort via JOIN) ---
-$stmtArtifact = $db->prepare("
+// -------------------------------------------------------
+// 1. Parameter einlesen & validieren
+// -------------------------------------------------------
+$page     = max(1, (int) ($_GET['page']     ?? 1));
+$perPage  = min(50, max(1, (int) ($_GET['per_page'] ?? 20)));
+$offset   = ($page - 1) * $perPage;
+
+$q          = trim($_GET['q']           ?? '');
+$type       = trim($_GET['type']        ?? '');
+$year       = filter_input(INPUT_GET, 'year',        FILTER_VALIDATE_INT);
+$decade     = filter_input(INPUT_GET, 'decade',      FILTER_VALIDATE_INT);
+$locationId = filter_input(INPUT_GET, 'location_id', FILTER_VALIDATE_INT);
+$personId   = filter_input(INPUT_GET, 'person_id',   FILTER_VALIDATE_INT);
+
+$allowedTypes = ['photo', 'document', 'postcard', 'map', 'other'];
+if ($type && !in_array($type, $allowedTypes, true)) {
+    abort('Ungültiger type-Parameter.', 400);
+}
+
+$allowedSorts = [
+    'year_desc'  => 'a.year DESC,  a.id DESC',
+    'year_asc'   => 'a.year ASC,   a.id ASC',
+    'title_asc'  => 'a.title ASC',
+];
+$sortKey   = $_GET['sort'] ?? 'year_desc';
+$orderBy   = $allowedSorts[$sortKey] ?? $allowedSorts['year_desc'];
+
+// -------------------------------------------------------
+// 2. WHERE-Klauseln & Parameter dynamisch aufbauen
+// -------------------------------------------------------
+$where  = ['a.is_published = 1'];
+$params = [];
+
+if ($q !== '') {
+    // Einfache LIKE-Suche – für größere Datenmengen später FULLTEXT INDEX
+    $where[]          = '(a.title LIKE :q OR a.description LIKE :q)';
+    $params[':q']     = '%' . $q . '%';
+}
+
+if ($type) {
+    $where[]          = 'a.artifact_type = :type';
+    $params[':type']  = $type;
+}
+
+if ($year) {
+    $where[]          = 'a.year = :year';
+    $params[':year']  = $year;
+} elseif ($decade) {
+    // Dekade: z.B. 1920 → 1920–1929
+    $where[]              = 'a.decade = :decade';
+    $params[':decade']    = $decade;
+}
+
+if ($locationId) {
+    // Primärer Ort ODER in artifact_locations verknüpft
+    $where[] = '(a.location_id = :loc_id OR EXISTS (
+        SELECT 1 FROM artifact_locations al
+        WHERE al.artifact_id = a.id AND al.location_id = :loc_id2
+    ))';
+    $params[':loc_id']  = $locationId;
+    $params[':loc_id2'] = $locationId;
+}
+
+if ($personId) {
+    $where[] = 'EXISTS (
+        SELECT 1 FROM artifact_persons ap
+        WHERE ap.artifact_id = a.id AND ap.person_id = :person_id
+    )';
+    $params[':person_id'] = $personId;
+}
+
+$whereSQL = 'WHERE ' . implode(' AND ', $where);
+
+// -------------------------------------------------------
+// 3. Gesamtanzahl für Pagination ermitteln
+// -------------------------------------------------------
+$countSQL = "SELECT COUNT(*) FROM artifacts a $whereSQL";
+$stmtCount = $db->prepare($countSQL);
+$stmtCount->execute($params);
+$total = (int) $stmtCount->fetchColumn();
+
+// -------------------------------------------------------
+// 4. Artefakte laden (mit primärem Ort via LEFT JOIN)
+// -------------------------------------------------------
+$sql = "
     SELECT
         a.id,
         a.title,
@@ -25,106 +101,74 @@ $stmtArtifact = $db->prepare("
         a.year,
         a.decade,
         a.artifact_type,
-        a.image_url,
         a.thumb_url,
+        a.image_url,
         a.source,
         a.created_at,
-        -- Primärer Ort direkt im Artefakt-Datensatz
-        l.id   AS primary_location_id,
-        l.name AS primary_location_name,
-        l.lat  AS primary_location_lat,
-        l.lng  AS primary_location_lng
+        l.id   AS loc_id,
+        l.name AS loc_name
     FROM artifacts a
     LEFT JOIN locations l ON a.location_id = l.id
-    WHERE a.id = :id
-      AND a.is_published = 1
-    LIMIT 1
-");
-$stmtArtifact->execute([':id' => $id]);
-$artifact = $stmtArtifact->fetch();
+    $whereSQL
+    ORDER BY $orderBy
+    LIMIT :limit OFFSET :offset
+";
 
-if (!$artifact) {
-    abort('Artefakt nicht gefunden.', 404);
+// LIMIT/OFFSET separat binden (PDO mag keine benannten Params für diese)
+$stmtList = $db->prepare($sql);
+foreach ($params as $key => $val) {
+    $stmtList->bindValue($key, $val);
 }
+$stmtList->bindValue(':limit',  $perPage, PDO::PARAM_INT);
+$stmtList->bindValue(':offset', $offset,  PDO::PARAM_INT);
+$stmtList->execute();
+$rows = $stmtList->fetchAll();
 
-// --- 2. Verknüpfte Personen laden ---
-$stmtPersons = $db->prepare("
-    SELECT
-        p.id,
-        p.first_name,
-        p.last_name,
-        p.birth_year,
-        p.death_year,
-        p.portrait_url,
-        ap.role
-    FROM persons p
-    INNER JOIN artifact_persons ap ON ap.person_id = p.id
-    WHERE ap.artifact_id = :artifact_id
-    ORDER BY p.last_name, p.first_name
-");
-$stmtPersons->execute([':artifact_id' => $id]);
-$persons = $stmtPersons->fetchAll();
-
-// --- 3. Weitere verknüpfte Orte laden ---
-$stmtLocations = $db->prepare("
-    SELECT
-        l.id,
-        l.name,
-        l.slug,
-        l.lat,
-        l.lng,
-        al.note
-    FROM locations l
-    INNER JOIN artifact_locations al ON al.location_id = l.id
-    WHERE al.artifact_id = :artifact_id
-    ORDER BY l.name
-");
-$stmtLocations->execute([':artifact_id' => $id]);
-$locations = $stmtLocations->fetchAll();
-
-// --- 4. Antwort zusammenbauen ---
-
-// Primären Ort aus dem Artefakt-Datensatz extrahieren & sauber strukturieren
-$primaryLocation = null;
-if ($artifact['primary_location_id']) {
-    $primaryLocation = [
-        'id'   => (int) $artifact['primary_location_id'],
-        'name' => $artifact['primary_location_name'],
-        'lat'  => $artifact['primary_location_lat'] ? (float) $artifact['primary_location_lat'] : null,
-        'lng'  => $artifact['primary_location_lng'] ? (float) $artifact['primary_location_lng'] : null,
+// -------------------------------------------------------
+// 5. Daten aufbereiten
+// -------------------------------------------------------
+$artifacts = array_map(function (array $row): array {
+    return [
+        'id'            => (int)    $row['id'],
+        'title'         => $row['title'],
+        'slug'          => $row['slug'],
+        'description'   => $row['description'],
+        'year'          => $row['year']   ? (int) $row['year']   : null,
+        'decade'        => $row['decade'] ? (int) $row['decade'] : null,
+        'artifact_type' => $row['artifact_type'],
+        'thumb_url'     => $row['thumb_url'],
+        'image_url'     => $row['image_url'],
+        'source'        => $row['source'],
+        'created_at'    => $row['created_at'],
+        'location'      => $row['loc_id'] ? [
+            'id'   => (int) $row['loc_id'],
+            'name' => $row['loc_name'],
+        ] : null,
     ];
-}
+}, $rows);
 
-// Zahlen casten (PDO gibt alles als String zurück)
-foreach ($persons as &$p) {
-    $p['id']         = (int)   $p['id'];
-    $p['birth_year'] = $p['birth_year'] ? (int) $p['birth_year'] : null;
-    $p['death_year'] = $p['death_year'] ? (int) $p['death_year'] : null;
-}
-unset($p);
+// -------------------------------------------------------
+// 6. Pagination-Meta berechnen & antworten
+// -------------------------------------------------------
+$lastPage = (int) ceil($total / $perPage);
 
-foreach ($locations as &$l) {
-    $l['id']  = (int)   $l['id'];
-    $l['lat'] = $l['lat'] ? (float) $l['lat'] : null;
-    $l['lng'] = $l['lng'] ? (float) $l['lng'] : null;
-}
-unset($l);
+json_response([
+    'data' => $artifacts,
+    'meta' => [
+        'total'        => $total,
+        'per_page'     => $perPage,
+        'current_page' => $page,
+        'last_page'    => $lastPage,
+        'has_more'     => $page < $lastPage,
+    ],
+    'filters' => [          // Aktive Filter zurückspiegeln (nützlich für Vue)
+        'q'           => $q        ?: null,
+        'type'        => $type     ?: null,
+        'year'        => $year     ?: null,
+        'decade'      => $decade   ?: null,
+        'location_id' => $locationId ?: null,
+        'person_id'   => $personId   ?: null,
+        'sort'        => $sortKey,
+    ],
+]);
 
-$response = [
-    'id'               => (int)    $artifact['id'],
-    'title'            => $artifact['title'],
-    'slug'             => $artifact['slug'],
-    'description'      => $artifact['description'],
-    'year'             => $artifact['year']   ? (int) $artifact['year']   : null,
-    'decade'           => $artifact['decade'] ? (int) $artifact['decade'] : null,
-    'artifact_type'    => $artifact['artifact_type'],
-    'image_url'        => $artifact['image_url'],
-    'thumb_url'        => $artifact['thumb_url'],
-    'source'           => $artifact['source'],
-    'created_at'       => $artifact['created_at'],
-    'primary_location' => $primaryLocation,
-    'persons'          => $persons,
-    'locations'        => $locations,
-];
-
-json_response($response);
