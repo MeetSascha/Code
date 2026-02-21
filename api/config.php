@@ -3,10 +3,10 @@
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'dein_datenbankname');
-define('DB_USER', 'dein_dbuser');
-define('DB_PASS', 'dein_passwort');
+define('DB_HOST', 'lindlar.anno-dazumal.de');
+define('DB_NAME', 'd0464739');
+define('DB_USER', 'd0464739');
+define('DB_PASS', 'qp#APCJdKBTWjoV2)!U4');
 define('DB_CHARSET', 'utf8mb4');
 
 function get_db(): PDO {

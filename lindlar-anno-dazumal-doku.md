@@ -1,6 +1,6 @@
 # Projekt-Dokumentation: lindlar-anno-dazumal.de
 
-**Stand:** Februar 2026  
+**Stand:** Februar 2026 — zuletzt aktualisiert: Slug-Lookup & SearchView implementiert  
 **Zielgruppe:** Senior Full-Stack Entwickler  
 **Hosting:** All-Inkl (Shared Hosting) — PHP 8.x, MariaDB, Apache, FTP  
 **Verfügbar:** PHP, MariaDB, Apache  
@@ -186,8 +186,9 @@ public_html/
 └── api/
     ├── config.php               ← DB-Verbindung, Konstanten
     ├── helpers.php              ← json_response(), JWT-Funktionen
-    ├── get_artifact.php         ← GET /api/get_artifact.php?id=
-    ├── get_artifacts.php        ← GET /api/get_artifacts.php?[filter]
+    ├── get_artifact.php             ← GET /api/get_artifact.php?id=
+    ├── get_artifact_by_slug.php     ← GET /api/get_artifact_by_slug.php?slug=
+    ├── get_artifacts.php            ← GET /api/get_artifacts.php?[filter]
     ├── auth/
     │   └── login.php            ← POST /api/auth/login.php
     └── admin/
@@ -306,6 +307,12 @@ Gibt ein einzelnes Artefakt zurück inkl. primärem Ort (JOIN), verknüpften Per
   "locations": [{ "id": 5, "name": "Marktplatz Lindlar", "slug": "marktplatz-lindlar", "lat": 51.0167, "lng": 7.3667, "note": null }]
 }
 ```
+
+#### GET `/api/get_artifact_by_slug.php?slug={string}`
+
+Identisch zu `get_artifact.php`, aber Lookup per Slug statt ID. Slug wird serverseitig auf `/^[a-z0-9\-]+$/` validiert. Gibt HTTP 404 zurück wenn kein publiziertes Artefakt mit diesem Slug existiert.
+
+**`ArtifactView.vue` nutzt diesen Endpunkt** — `route.params.slug` wird direkt übergeben. Der Store reagiert auf Slug-Wechsel via `watch(() => route.params.slug, load)`, sodass Browser-Navigation ohne Seiten-Reload funktioniert.
 
 #### GET `/api/get_artifacts.php`
 
@@ -426,7 +433,7 @@ src/
 │   │   ├── HomeView.vue          ← Galerie-Startseite
 │   │   ├── ArtifactView.vue      ← Einzelansicht
 │   │   ├── TimelineView.vue      ← Platzhalter (ausbaubar)
-│   │   └── SearchView.vue        ← Platzhalter (ausbaubar)
+│   │   └── SearchView.vue        ← Volltextsuche mit Filtern, Deep-Linking
 │   └── admin/
 │       ├── LoginView.vue         ← Login-Formular
 │       ├── DashboardView.vue     ← Artefakt-Tabelle + Delete-Dialog
@@ -473,6 +480,7 @@ export const api = {
   login:          (username, password) => request('/auth/login.php', { method: 'POST', body: JSON.stringify({ username, password }) }),
   getArtifacts:   (params = {})        => request(`/get_artifacts.php?${new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== '')))}`),
   getArtifact:    (id)                 => request(`/get_artifact.php?id=${id}`),
+  getArtifactBySlug: (slug)            => request(`/get_artifact_by_slug.php?slug=${encodeURIComponent(slug)}`),
   saveArtifact:   (data)               => request('/admin/save_artifact.php',   { method: 'POST', body: JSON.stringify(data) }),
   deleteArtifact: (id, hard = false)   => request('/admin/delete_artifact.php', { method: 'POST', body: JSON.stringify({ id, hard_delete: hard }) }),
   uploadImage:    (file)               => { const f = new FormData(); f.append('image', file); return request('/admin/upload_image.php', { method: 'POST', body: f }) },
@@ -485,7 +493,7 @@ export { ApiError }
 
 **`stores/auth.js`:** Verwaltet `user` und `token` (beide in `localStorage` persistiert). `isLoggedIn` und `isAdmin` als computed. `checkAuth()` dekodiert den JWT-Payload clientseitig (Base64) und prüft `exp`-Claim. Wird in jedem Navigation Guard aufgerufen.
 
-**`stores/artifacts.js`:** Verwaltet `items` (Liste), `current` (Einzelansicht), `meta` (Pagination), `filters` (aktive Filterparameter). `setFilter()` setzt immer `page` auf 1 zurück. `fetchArtifacts()` und `fetchArtifact()` wrappen API-Calls mit `loading`/`error`-State.
+**`stores/artifacts.js`:** Verwaltet `items` (Liste), `current` (Einzelansicht), `meta` (Pagination), `filters` (aktive Filterparameter). `setFilter()` setzt immer `page` auf 1 zurück. `fetchArtifacts()`, `fetchArtifact()` und `fetchArtifactBySlug()` wrappen API-Calls mit `loading`/`error`-State.
 
 ### 5.6 Router (`src/router/index.js`)
 
@@ -505,8 +513,6 @@ Vue Router 4, `createWebHistory`. Alle Views werden lazy-geladen (`() => import(
 | `/admin/artefakt/:id/bearbeiten` | `artifact-edit` | requiresAuth | AdminSidebar |
 
 **Navigation Guard:** Setzt Seitentitel, ruft `auth.checkAuth()` auf, leitet bei `requiresAuth` ohne Token zu `/admin/login?redirect=...` weiter.
-
-> **Hinweis:** `ArtifactView.vue` nutzt aktuell `route.query.id` statt des Slugs für den API-Aufruf. Für Slug-basierte Lookups muss ein zusätzlicher API-Endpunkt (`get_artifact_by_slug.php`) oder ein serverseitiges Mapping ergänzt werden.
 
 ### 5.7 Admin-Panel
 
@@ -565,10 +571,11 @@ Per FTP auf All-Inkl hochladen:
 ```apache
 # public_html/api/.htaccess
 RewriteEngine On
-RewriteRule ^artifacts$           get_artifacts.php  [L,QSA]
-RewriteRule ^artifacts/(\d+)$     get_artifact.php?id=$1   [L,QSA]
-RewriteRule ^persons/(\d+)$       get_person.php?id=$1     [L,QSA]
-RewriteRule ^locations/(\d+)$     get_location.php?id=$1   [L,QSA]
+RewriteRule ^artifacts$                    get_artifacts.php           [L,QSA]
+RewriteRule ^artifacts/(\d+)$             get_artifact.php?id=$1      [L,QSA]
+RewriteRule ^artifacts/([a-z0-9\-]+)$    get_artifact_by_slug.php?slug=$1 [L,QSA]
+RewriteRule ^persons/(\d+)$              get_person.php?id=$1         [L,QSA]
+RewriteRule ^locations/(\d+)$            get_location.php?id=$1       [L,QSA]
 ```
 
 ---
@@ -577,11 +584,11 @@ RewriteRule ^locations/(\d+)$     get_location.php?id=$1   [L,QSA]
 
 | Priorität | Thema | Beschreibung |
 |---|---|---|
-| Hoch | Slug-Lookup | `ArtifactView.vue` nutzt `route.query.id` — Slug-basierter API-Endpunkt fehlt |
+| ✅ Erledigt | Slug-Lookup | `get_artifact_by_slug.php` implementiert, `ArtifactView.vue` nutzt `route.params.slug` |
+| ✅ Erledigt | `SearchView.vue` | Volltextsuche mit Filtern, Debounce, Deep-Linking via URL-Query implementiert |
 | Hoch | CORS | `Access-Control-Allow-Origin: *` in `helpers.php` für Produktion einschränken |
 | Hoch | JWT_SECRET | Muss auf einen langen, zufälligen Wert gesetzt und sicher verwahrt werden |
 | Mittel | `TimelineView.vue` | Nur Platzhalter — Jahrzehnt-gruppierte Ansicht noch nicht implementiert |
-| Mittel | `SearchView.vue` | Nur Platzhalter — dedizierte Suchseite noch nicht implementiert |
 | Mittel | Admin unpublished | Dashboard zeigt nur `is_published=1` — eigener Admin-Listenendpunkt nötig |
 | Mittel | Personen-Picker | Personen werden aktuell per ID eingetragen — Autocomplete/Suche sinnvoll |
 | Niedrig | Volltext-Index | LIKE-Suche für große Datenmengen durch `FULLTEXT INDEX` ersetzen |
