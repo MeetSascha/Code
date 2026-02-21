@@ -13,7 +13,9 @@ if (!$body) {
 // -------------------------------------------------------
 // Felder einlesen & validieren
 // -------------------------------------------------------
-$id          = isset($body['id']) ? (int) $body['id'] : null;  // null = Create
+$id          = isset($body['id']) && $body['id'] !== null && $body['id'] !== '' 
+                    ? (int) $body['id'] 
+                    : null;
 $title       = trim($body['title']       ?? '');
 $description = trim($body['description'] ?? '');
 $year        = isset($body['year'])   ? (int) $body['year']   : null;
