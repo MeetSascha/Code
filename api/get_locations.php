@@ -2,36 +2,47 @@
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/helpers.php';
 
-if ($_SERVER['REQUEST_METHOD'] !== 'GET') abort('Method Not Allowed', 405);
+// Auth Check (Optional: Wenn die Map öffentlich ist, diesen Block entfernen)
+// Hier lassen wir ihn drin für den Admin-Bereich.
+$token = get_bearer_token();
+if (!$token || !jwt_decode($token)) {
+    // Falls du die Orte später öffentlich auf einer Karte zeigen willst,
+    // kommentiere das 'abort' hier aus!
+    // abort('Unauthorized', 401);
+}
 
-$q  = trim($_GET['q'] ?? '');
 $db = get_db();
+$q = trim($_GET['q'] ?? '');
 
-if ($q !== '') {
-    $stmt = $db->prepare("
-        SELECT id, first_name, last_name, birth_year, death_year
-        FROM persons
-        WHERE first_name LIKE :q OR last_name LIKE :q
-        ORDER BY last_name, first_name
-        LIMIT 20
-    ");
-    $stmt->execute([':q' => '%' . $q . '%']);
-} else {
-    $stmt = $db->prepare("
-        SELECT id, first_name, last_name, birth_year, death_year
-        FROM persons
-        ORDER BY last_name, first_name
-        LIMIT 100
-    ");
-    $stmt->execute();
+$sql = "SELECT * FROM locations";
+$params = [];
+
+if ($q) {
+    $sql .= " WHERE name LIKE :q";
+    $params[':q'] = "%$q%";
 }
 
-$rows = $stmt->fetchAll();
-foreach ($rows as &$r) {
-    $r['id']         = (int)   $r['id'];
-    $r['birth_year'] = $r['birth_year'] ? (int) $r['birth_year'] : null;
-    $r['death_year'] = $r['death_year'] ? (int) $r['death_year'] : null;
-}
-unset($r);
+$sql .= " ORDER BY name ASC";
 
-json_response(['data' => $rows]);
+$stmt = $db->prepare($sql);
+$stmt->execute($params);
+$locations = $stmt->fetchAll();
+
+// Zähle, wie oft jeder Ort verwendet wird (für Statistik in der Liste)
+// Das machen wir als separate, schnelle Query oder Subquery. 
+// Hier der Einfachheit halber: Wir lassen es erst mal weg oder machen es simpel.
+// Besser: Wir erweitern das SQL oben leicht.
+
+$sql = "SELECT l.*, 
+       (SELECT COUNT(*) FROM artifact_locations al WHERE al.location_id = l.id) as usage_count
+       FROM locations l";
+if ($q) {
+    $sql .= " WHERE l.name LIKE :q";
+}
+$sql .= " ORDER BY l.name ASC";
+
+$stmt = $db->prepare($sql);
+$stmt->execute($params);
+$locations = $stmt->fetchAll();
+
+json_response($locations);

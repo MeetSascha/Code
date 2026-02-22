@@ -1,52 +1,34 @@
 <?php
-require_once __DIR__ . '/_auth_middleware.php';
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/helpers.php';
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') abort('Method Not Allowed', 405);
+// Nur Admins dürfen speichern
+$token = get_bearer_token();
+if (!$token || !jwt_decode($token)) abort('Unauthorized', 401);
 
-$body = json_decode(file_get_contents('php://input'), true);
-$name = trim($body['name'] ?? '');
+$input = json_decode(file_get_contents('php://input'), true);
+$id    = $input['id'] ?? null;
+$name  = trim($input['name'] ?? '');
+$lat   = $input['lat'] ?? null;
+$lng   = $input['lng'] ?? null;
 
-if (!$name) abort('Name ist erforderlich.', 422);
+if (!$name) abort('Name ist erforderlich', 400);
 
-// Slug generieren
-function make_slug(string $text): string {
-    $text = mb_strtolower($text, 'UTF-8');
-    $text = strtr($text, ['ä'=>'ae','ö'=>'oe','ü'=>'ue','ß'=>'ss']);
-    $text = preg_replace('/[^a-z0-9]+/', '-', $text);
-    return trim($text, '-');
-}
+// Slug generieren (vereinfacht)
+$slug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $name)));
 
-$db   = get_db();
-$id   = isset($body['id']) && $body['id'] !== null ? (int) $body['id'] : null;
-$lat  = isset($body['lat'])  ? (float) $body['lat']  : null;
-$lng  = isset($body['lng'])  ? (float) $body['lng']  : null;
-$desc = trim($body['description'] ?? '') ?: null;
+$db = get_db();
 
-if (!$id) {
-    // CREATE
-    $baseSlug = make_slug($name);
-    $slug     = $baseSlug;
-    $counter  = 1;
-    while (true) {
-        $check = $db->prepare('SELECT id FROM locations WHERE slug = :s LIMIT 1');
-        $check->execute([':s' => $slug]);
-        if (!$check->fetch()) break;
-        $slug = $baseSlug . '-' . $counter++;
-    }
-
-    $stmt = $db->prepare("
-        INSERT INTO locations (name, slug, description, lat, lng)
-        VALUES (:name, :slug, :desc, :lat, :lng)
-    ");
-    $stmt->execute([':name' => $name, ':slug' => $slug, ':desc' => $desc, ':lat' => $lat, ':lng' => $lng]);
-    $id = (int) $db->lastInsertId();
+if ($id) {
+    // Update
+    $stmt = $db->prepare("UPDATE locations SET name = ?, slug = ?, lat = ?, lng = ? WHERE id = ?");
+    $stmt->execute([$name, $slug, $lat, $lng, $id]);
+    $newId = $id;
 } else {
-    // UPDATE
-    $stmt = $db->prepare("
-        UPDATE locations SET name = :name, description = :desc, lat = :lat, lng = :lng
-        WHERE id = :id
-    ");
-    $stmt->execute([':name' => $name, ':desc' => $desc, ':lat' => $lat, ':lng' => $lng, ':id' => $id]);
+    // Insert
+    $stmt = $db->prepare("INSERT INTO locations (name, slug, lat, lng) VALUES (?, ?, ?, ?)");
+    $stmt->execute([$name, $slug, $lat, $lng]);
+    $newId = $db->lastInsertId();
 }
 
-json_response(['success' => true, 'id' => $id]);
+json_response(['id' => $newId, 'name' => $name, 'slug' => $slug, 'status' => 'success']);

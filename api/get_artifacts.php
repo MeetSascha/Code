@@ -9,6 +9,15 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 $db = get_db();
 
 // -------------------------------------------------------
+// NEU: Admin-Check (Auth)
+// -------------------------------------------------------
+$isAdmin = false;
+$token = get_bearer_token();
+if ($token && jwt_decode($token)) {
+    $isAdmin = true;
+}
+
+// -------------------------------------------------------
 // 1. Parameter einlesen & validieren
 // -------------------------------------------------------
 $page     = max(1, (int) ($_GET['page']     ?? 1));
@@ -27,10 +36,12 @@ if ($type && !in_array($type, $allowedTypes, true)) {
     abort('Ungültiger type-Parameter.', 400);
 }
 
+// Sortierung
 $allowedSorts = [
     'year_desc'  => 'a.year DESC,  a.id DESC',
     'year_asc'   => 'a.year ASC,   a.id ASC',
     'title_asc'  => 'a.title ASC',
+    'created_desc' => 'a.created_at DESC', // Nützlich fürs Dashboard
 ];
 $sortKey   = $_GET['sort'] ?? 'year_desc';
 $orderBy   = $allowedSorts[$sortKey] ?? $allowedSorts['year_desc'];
@@ -38,11 +49,15 @@ $orderBy   = $allowedSorts[$sortKey] ?? $allowedSorts['year_desc'];
 // -------------------------------------------------------
 // 2. WHERE-Klauseln & Parameter dynamisch aufbauen
 // -------------------------------------------------------
-$where  = ['a.is_published = 1'];
+$where  = [];
 $params = [];
 
+// LOGIK-ÄNDERUNG: Nur filtern, wenn KEIN Admin
+if (!$isAdmin) {
+    $where[] = 'a.is_published = 1';
+}
+
 if ($q !== '') {
-    // Einfache LIKE-Suche – für größere Datenmengen später FULLTEXT INDEX
     $where[]          = '(a.title LIKE :q OR a.description LIKE :q)';
     $params[':q']     = '%' . $q . '%';
 }
@@ -56,13 +71,11 @@ if ($year) {
     $where[]          = 'a.year = :year';
     $params[':year']  = $year;
 } elseif ($decade) {
-    // Dekade: z.B. 1920 → 1920–1929
     $where[]              = 'a.decade = :decade';
     $params[':decade']    = $decade;
 }
 
 if ($locationId) {
-    // Primärer Ort ODER in artifact_locations verknüpft
     $where[] = '(a.location_id = :loc_id OR EXISTS (
         SELECT 1 FROM artifact_locations al
         WHERE al.artifact_id = a.id AND al.location_id = :loc_id2
@@ -79,7 +92,12 @@ if ($personId) {
     $params[':person_id'] = $personId;
 }
 
-$whereSQL = 'WHERE ' . implode(' AND ', $where);
+// Falls $where leer ist (z.B. Admin ohne Filter), müssen wir "WHERE 1=1" oder ähnliches vermeiden
+// implode mit AND ist sicher, solange das Array nicht leer ist.
+$whereSQL = '';
+if (count($where) > 0) {
+    $whereSQL = 'WHERE ' . implode(' AND ', $where);
+}
 
 // -------------------------------------------------------
 // 3. Gesamtanzahl für Pagination ermitteln
@@ -90,8 +108,9 @@ $stmtCount->execute($params);
 $total = (int) $stmtCount->fetchColumn();
 
 // -------------------------------------------------------
-// 4. Artefakte laden (mit primärem Ort via LEFT JOIN)
+// 4. Artefakte laden
 // -------------------------------------------------------
+// NEU: a.is_published im SELECT hinzugefügt
 $sql = "
     SELECT
         a.id,
@@ -104,6 +123,7 @@ $sql = "
         a.thumb_url,
         a.image_url,
         a.source,
+        a.is_published,
         a.created_at,
         l.id   AS loc_id,
         l.name AS loc_name
@@ -114,13 +134,18 @@ $sql = "
     LIMIT :limit OFFSET :offset
 ";
 
-// LIMIT/OFFSET separat binden (PDO mag keine benannten Params für diese)
 $stmtList = $db->prepare($sql);
+
+// Parameter binden
 foreach ($params as $key => $val) {
     $stmtList->bindValue($key, $val);
 }
+// Limit/Offset separat binden
 $stmtList->bindValue(':limit',  $perPage, PDO::PARAM_INT);
 $stmtList->bindValue(':offset', $offset,  PDO::PARAM_INT);
+
+// Wegen foreach($params) kann man execute() hier ohne Argumente aufrufen,
+// da bindValue bereits alles erledigt hat.
 $stmtList->execute();
 $rows = $stmtList->fetchAll();
 
@@ -139,6 +164,7 @@ $artifacts = array_map(function (array $row): array {
         'thumb_url'     => $row['thumb_url'],
         'image_url'     => $row['image_url'],
         'source'        => $row['source'],
+        'is_published'  => (bool) $row['is_published'], // NEU: Fürs Dashboard
         'created_at'    => $row['created_at'],
         'location'      => $row['loc_id'] ? [
             'id'   => (int) $row['loc_id'],
@@ -160,8 +186,9 @@ json_response([
         'current_page' => $page,
         'last_page'    => $lastPage,
         'has_more'     => $page < $lastPage,
+        'is_admin'     => $isAdmin // Debug-Info (optional)
     ],
-    'filters' => [          // Aktive Filter zurückspiegeln (nützlich für Vue)
+    'filters' => [
         'q'           => $q        ?: null,
         'type'        => $type     ?: null,
         'year'        => $year     ?: null,
@@ -171,4 +198,3 @@ json_response([
         'sort'        => $sortKey,
     ],
 ]);
-
