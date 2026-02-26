@@ -1,10 +1,9 @@
 <?php
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/_auth_middleware.php';
 
-// Nur Admins dürfen speichern
-$token = get_bearer_token();
-if (!$token || !jwt_decode($token)) abort('Unauthorized', 401);
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    abort('Method Not Allowed', 405);
+}
 
 $input = json_decode(file_get_contents('php://input'), true);
 $id    = $input['id'] ?? null;
@@ -14,8 +13,7 @@ $lng   = $input['lng'] ?? null;
 
 if (!$name) abort('Name ist erforderlich', 400);
 
-// Slug generieren (vereinfacht)
-$slug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $name)));
+$slug = make_slug($name);
 
 $db = get_db();
 
@@ -31,4 +29,4 @@ if ($id) {
     $newId = $db->lastInsertId();
 }
 
-json_response(['id' => $newId, 'name' => $name, 'slug' => $slug, 'status' => 'success']);
+json_response(['success' => true, 'id' => $newId, 'name' => $name, 'slug' => $slug]);

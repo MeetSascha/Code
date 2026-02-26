@@ -38,13 +38,7 @@ if (!in_array($type, $allowedTypes, true)) {
     abort('Ungültiger artifact_type.', 422);
 }
 
-// Slug generieren (nur beim Erstellen, nie überschreiben)
-function make_slug(string $text): string {
-    $text = mb_strtolower($text, 'UTF-8');
-    $text = strtr($text, ['ä'=>'ae','ö'=>'oe','ü'=>'ue','ß'=>'ss']);
-    $text = preg_replace('/[^a-z0-9]+/', '-', $text);
-    return trim($text, '-');
-}
+// make_slug() kommt aus helpers.php
 
 $db = get_db();
 
