@@ -47,6 +47,13 @@ function base64url_decode(string $data): string {
     return base64_decode(strtr($data, '-_', '+/'));
 }
 
+function make_slug(string $text): string {
+    $text = mb_strtolower($text, 'UTF-8');
+    $text = strtr($text, ['ä'=>'ae','ö'=>'oe','ü'=>'ue','ß'=>'ss']);
+    $text = preg_replace('/[^a-z0-9]+/', '-', $text);
+    return trim($text, '-');
+}
+
 function get_bearer_token(): ?string {
     $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     if (preg_match('/^Bearer\s+(.+)$/i', $header, $m)) {

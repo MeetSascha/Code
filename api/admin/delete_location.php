@@ -1,10 +1,9 @@
 <?php
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/_auth_middleware.php';
 
-// Nur Admins
-$token = get_bearer_token();
-if (!$token || !jwt_decode($token)) abort('Unauthorized', 401);
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    abort('Method Not Allowed', 405);
+}
 
 $input = json_decode(file_get_contents('php://input'), true);
 $id = $input['id'] ?? null;
@@ -23,4 +22,4 @@ if ($stmt->fetchColumn() > 0) {
 $stmt = $db->prepare("DELETE FROM locations WHERE id = ?");
 $stmt->execute([$id]);
 
-json_response(['status' => 'deleted']);
+json_response(['success' => true]);

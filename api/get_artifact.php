@@ -1,7 +1,7 @@
 <?php
 // 1. Konfiguration und Helper laden
-require_once 'config.php';
-require_once 'helpers.php';
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/helpers.php';
 
 // 2. Eingabe validieren
 $id = $_GET['id'] ?? null;
